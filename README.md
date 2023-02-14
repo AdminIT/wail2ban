@@ -8,13 +8,13 @@ wail2ban is a windows port of the basic functionality of [fail2ban](http://www.f
 This is modified version of Wail2ban by Miroslav Holman for use in AdminIT s.r.o company.
 Readme file is modified version from original github project (https://github.com/glasnt/wail2ban)
 
-overview
+Overview
 --------
 
 wail2ban is a system that takes incoming failed access events for a custom configurable set of known event ids, and given sufficient failed attacks in a period of time, creates temporary firewall rules to block access. 
 
 
-installation 
+Installation 
 ------------
 
 Installing wail2ban is a case of a fiew simple tasks: 
@@ -26,12 +26,12 @@ Installing wail2ban is a case of a fiew simple tasks:
  * After installation is complete start the service.
 
 
-uninstallation 
+Uninstallation 
 ------------
  * Run wail2ban_install_service.ps1 with parameter `-uninstall`
 
 
-command line execution
+Command line execution
 ---------------------
 
 wail2ban has `write-debug` things through it, just uncomment the `$DebugPreference` line to enable. This will output nice things to CMD, if running ad-hoc.
@@ -43,7 +43,7 @@ There are also a number of options that can be run against the script to control
  * `-jailbreak`: unbans every IP currently banned by the script. 
  * `-help` : See complete list of commands
 
-technical overview 
+Technical overview 
 ------------------
 
 Event logs for various software packages are configured to produce messages when failed connections occur. The contents of the events usually contain an IP, an a message something along the lines of "This IP failed to connect to your server."
@@ -62,7 +62,7 @@ These events are produced any time someone mistypes a password, or similar.
 
 The issue occurs when automated brute-force entry systems attempt to access systems multiple times a second. 
 
-what wail2ban does
+What wail2ban does
 ------------------
 
 wail2ban is a real-time event sink for these messages. As messages come in, wail2ban takes note of the time of the attempt and the IP used in the attempt. Given enough attempts in a specific period of time, wail2ban will generate a firewall rule to block all access to the client machine for a certain period of time. 
@@ -79,7 +79,7 @@ This allows for scaling of bans, but prevent permenant bans, which may cause iss
 
 There is also a `$MAX_BANDURATION` in place, which means that an IP cannot be banned for more than 3 months. Given the ban duration function gives values of years at the 10th increment, it's better to cap things out.
 
-failsafes 
+Failsafes 
 ---------
 
 As with all automated systems, there can be some false-positives. 
@@ -109,7 +109,7 @@ I've added a script that will grep the wail2ban log file, and generate some nice
 If you want to enable this, grok the main wail2ban.ps1 script for the call to `wail2ban_htmlgen.ps1`, and enable it (remove the comment)
 
 
-limitations
+Limitations
 -----------
 * Wail2ban works only on Windows or Windows server from Windows server 2016 and up. This is due to a eventvwr bug present in earlier Windows version, that does not write incoming IP adress, which made the false audit, into event log, if the adress is not resolvable by local network hostname.
 * Windows Firewall has to be turned ON on network profile you using! Wail2ban is just simply creating and removing Windows Firewall rules in order to block incoming requests.
