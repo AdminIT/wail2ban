@@ -9,6 +9,23 @@
 # 
 # For help, read the below function. 
 #
+# modified by AdminIT: 
+#	change log:
+#	v1.3.1:
+#	- Fixed bug with whitelisting IP ranges, when whitelisting cidr with different mask, than cidrmask for blocking, would still ban IP subned from whitelisted range.
+#	v1.3.0:
+#	- added option to ban IP CIDR ranges based on incoming IP (ex. 192.168.0.2 -> bans 192.168.0.0/24) CIDR values can be set to 24,16 or 0 for standart single ip banning
+#	- added handle when script is ran without parameters
+#	v1.2.1:
+#	- added ban ip parameter
+#	- script not run as administrator fail safe
+#	- unban_old_records runs now in loop as background PS job - removal doesn't have to wait for failed login to execute
+#	- unban_old_records LOOP_PERFORMANCE_OPTIMIZATION variable that optimizes cpu usage by running endless loop
+#	- errors do also log
+#	- minor code and syntax polish
+#	- debugpreference commented for whole script and added to invidual args 
+#			- means that debug messages are shown for parameters like "-unban, -jail, etc." and not when script is running as service.
+#	
 function help { 
 	"`nwail2ban   `n"
 	"wail2ban is an attempt to recreate fail2ban for windows, hence [w]indows f[ail2ban]."
@@ -18,15 +35,24 @@ function help {
 	"of time."
 	" "
 	"Settings: "
-	" -config    : show the settings that are being used "
-	" -jail      : show the currently banned IPs"
-	" -jailbreak : bust out all the currently banned IPs"	
-    " -help      : This message."
+	" -config	: Show the settings that are being used "
+	" -unban		: Unbans IP"
+	" -ban		: Bans IP for a looong time (some could say permanent)"
+	" -jail		: Show the currently banned IPs"
+	" -jailbreak	: Bust out all the currently banned IPs"	
+    " -help		: This message."
+	" "
+	"Run parameters:"
+	" -cidrmask 	: Enter CIDR mask value to set whole range of IP adresses, which will automatically"
+	"                  get baned. Possible values are '24' and '16'. '0' or running script without"
+	"                  this parameter will ban only single IPs."
+	"                  (ex. if you set 24, when IP 192.168.0.5 gets banned," 
+	"                  whole range 192.168.0.0/24 is also blocked)"
 	" "
 }
 
 
-$DebugPreference = "continue"
+#$DebugPreference = "continue" #Uncomment if you want to debug whole script
 
 ################################################################################
 #  Constants
@@ -34,12 +60,14 @@ $DebugPreference = "continue"
 $CHECK_WINDOW = 120  # We check the most recent X seconds of log.         Default: 120
 $CHECK_COUNT  = 5    # Ban after this many failures in search period.     Default: 5
 $MAX_BANDURATION = 7776000 # 3 Months in seconds
-	
+$PERMABAN_DURATION = 315576000 #Simulates permaban by specifying long duration in seconds	Default: 315576000 (10years)
+$LOOP_PERFORMANCE_OPTIMIZATION = 10 #Sets duration checking intervals of unban_old_records endless loop in seconds.	Default: 10
+
 ################################################################################
 #  Files
 
 $wail2banInstall = ""+(Get-Location)+"\"
-$wail2banScript  = $wail2banInstall+"wail2ban.ps1"
+$wail2banScript  = $wail2banInstall+"wail2ban.ps1" #in original version, but variable not used
 $logFile         = $wail2banInstall+"wail2ban_log.log"
 $ConfigFile      = $wail2banInstall+"wail2ban_config.ini"
 $BannedIPLog	 = $wail2banInstall+"bannedIPLog.ini"
@@ -65,7 +93,7 @@ $null = $CheckEvents.columns.add("EventDescription")
 $WhiteList = @()
 #$host.UI.RawUI.BufferSize = new-object System.Management.Automation.Host.Size(100,50)
 
-$OSVersion = invoke-expression "wmic os get Caption /value"
+#$OSVersion = invoke-expression "wmic os get Caption /value" #in original version, but variable not used
 $BLOCK_TYPE = "NETSH"
 
 #Grep configuration file 
@@ -126,6 +154,7 @@ function actioned    ($text) { log "A" $text }
 function log ($type, $text) { 
 	$output = ""+(get-date -format u).replace("Z","")+" $tag $text"  
 	if ($type -eq "A") { $output | out-file $logfile -append}
+	if ($type -eq "E") { $output | out-file $logfile -append}
 	switch ($type) { 
 		"D" { write-debug $output} 
 		"W" { write-warning "WARNING: $output"} 
@@ -133,11 +162,11 @@ function log ($type, $text) {
 		"A" { write-debug $output }
 	} 
 }
-	 
+
 #Get the current list of wail2ban bans
 function get_jail_list {
 	$fw = New-Object -ComObject hnetcfg.fwpolicy2 
-	return $fw.rules | Where-Object { $_.name -match $FirewallRulePrefix } | Select name, description
+	return $fw.rules | Where-Object { $_.name -match $FirewallRulePrefix } | Select-Object name, description
 }
 
 # Confirm if rule exists.
@@ -169,15 +198,51 @@ function netmask($MaskLength) {
 }
   
 #check if IP is whitelisted
-function whitelisted($IP) { 
+function whitelisted($IP) {
+	$Whitelisted = $false
 	foreach ($white in $Whitelist) {
-		if ($IP -eq $white) { $Whitelisted = "Uniquely listed."; break} 
-		if ($white.contains("/")) { 
+		if ($IP.contains("/") -and $white.Contains("/") -and (($IP.Split("/")[1]) -ge ($white.Split("/")[1]))) {
+			#handle if both IP and whitelist are IP range. But only when cidrmask of adress is greater or equal than whitelisted
+			$IPUnmasked = $IP.Split("/")[0]
+			if ($white.contains("/")) {
+				$Mask =  netmask($white.Split("/")[1])
+				$subnet = $white.Split("/")[0]
+				if ((([net.ipaddress]$IPUnmasked).Address -band ([net.ipaddress]$Mask).Address) -eq
+					(([net.ipaddress]$subnet).Address -band ([net.ipaddress]$Mask).Address)) { 
+					$Whitelisted = "Contained in subnet $white"; break;
+				}
+			}
+		}
+		elseif ($IP.contains("/") -and $white.Contains("/") -and (($IP.Split("/")[1]) -lt ($white.Split("/")[1]))) {
+			#handle if both IP and whitelist are IP range. But only when cidrmask of adress is lower than whitelisted
 			$Mask =  netmask($white.Split("/")[1])
 			$subnet = $white.Split("/")[0]
-			if ((([net.ipaddress]$IP).Address          -Band ([net.ipaddress]$Mask).Address ) 	-eq`
-				(([net.ipaddress]$subnet).Address -Band ([net.ipaddress]$Mask).Address )) { 
-				$Whitelisted = "Contained in subnet $white"; break;
+			if ((([net.ipaddress]$origIP).Address -band ([net.ipaddress]$Mask).Address) -eq
+					(([net.ipaddress]$subnet).Address -band ([net.ipaddress]$Mask).Address)) { 
+					$Whitelisted = "Contained in subnet $white"; break;
+				}
+		}
+		elseif (($IP.Contains("/") -and !($white.Contains("/")))) {
+			#handle if IP is range but whitelisted is singular adress
+			if ($origIP -eq $white) {
+				$Whitelisted = "Uniquely listed."; break
+			}
+			else {
+				$Whitelisted = $false
+			}
+		}
+		else {
+			#classic handle of singular IP adress and whitelisted IP or IP range
+			if ($IP -eq $white) { 
+				$Whitelisted = "Uniquely listed."; break
+			}
+			if ($white.contains("/")) { 
+				$Mask =  netmask($white.Split("/")[1])
+				$subnet = $white.Split("/")[0]
+				if ((([net.ipaddress]$IP).Address -Band ([net.ipaddress]$Mask).Address ) -eq
+					(([net.ipaddress]$subnet).Address -Band ([net.ipaddress]$Mask).Address )) { 
+					$Whitelisted = "Contained in subnet $white"; break;
+				}
 			}
 		}
 	}
@@ -187,7 +252,7 @@ function whitelisted($IP) {
 #Read in the saved file of settings. Only called on script start, such as after reboot
 function pickupBanDuration { 
 	if (Test-Path $BannedIPLog) { 
-		get-content $BannedIPLog | %{ 
+		get-content $BannedIPLog | ForEach-Object{ 
 			if (!$BannedIPs.ContainsKey($_.split(" ")[0])) { $BannedIPs.Add($_.split(" ")[0],$_.split(" ")[1]) }
 		}			
 		debug "$BannedIPLog ban counts loaded"
@@ -207,14 +272,14 @@ function getBanDuration ($IP) {
 	$BanDuration =  [math]::min([math]::pow(5,$Setting)*60, $MAX_BANDURATION)
 	debug "IP $IP has the new setting of $setting, being $BanDuration seconds"
 	if (Test-Path $BannedIPLog) { clear-content $BannedIPLog } else { New-Item $BannedIPLog -type file }
-	$BannedIPs.keys  | %{ "$_ "+$BannedIPs.Get_Item($_) | Out-File $BannedIPLog -Append }
+	$BannedIPs.keys  | ForEach-Object { "$_ "+$BannedIPs.Get_Item($_) | Out-File $BannedIPLog -Append }
 	return $BanDuration
 }
 
 # Ban the IP (with checking)
 function jail_lockup ($IP, $ExpireDate) { 
 	$result = whitelisted($IP)
-	if ($result) { warning "$IP is whitelisted, except from banning. Why? $result " } 
+	if ($result) { warning "$IP or original IP $origIP is whitelisted, except from banning. Why? $result " } 
 	else {
 		if (!$ExpireDate) { 
 			$BanDuration = getBanDuration($IP)
@@ -283,8 +348,8 @@ function unban_old_records {
 			$IP = $inmate.Name.substring($FirewallRulePrefix.length+1)
 			$ReleaseDate = $inmate.Description.substring("Expire: ".Length)
 			
-			if ($([int]([datetime]$ReleaseDate- (Get-Date)).TotalSeconds) -lt 0) { 
-				debug "Unban old records: $IP looks old enough $(get-date $ReleaseDate -format G)"
+			if ($([int]([datetime]$ReleaseDate - (Get-Date)).TotalSeconds) -lt 0) { 
+				actioned "Unban old records: $IP looks old enough $(get-date $ReleaseDate -format G)"
 				jail_release $IP 
 			} 
 		}
@@ -294,19 +359,19 @@ function unban_old_records {
 #Convert the TimeGenerated time into Epoch
 function WMIDateStringToDateTime( [String] $iSt ) { 
 	$iSt.Trim() > $null 
-	$iYear   = [Int32]::Parse($iSt.SubString( 0, 4)) 
-	$iMonth  = [Int32]::Parse($iSt.SubString( 4, 2)) 
-	$iDay    = [Int32]::Parse($iSt.SubString( 6, 2)) 
-	$iHour   = [Int32]::Parse($iSt.SubString( 8, 2)) 
-	$iMinute = [Int32]::Parse($iSt.SubString(10, 2)) 
-	$iSecond = [Int32]::Parse($iSt.SubString(12, 2)) 
-	$iMilliseconds = 0 	
-	$iUtcOffsetMinutes = [Int32]::Parse($iSt.Substring(21, 4)) 
+	$iYear   = [Int32]::Parse($iSt.SubString( 0, 4))
+	$iMonth  = [Int32]::Parse($iSt.SubString( 4, 2))
+	$iDay    = [Int32]::Parse($iSt.SubString( 6, 2))
+	$iHour   = [Int32]::Parse($iSt.SubString( 8, 2))
+	$iMinute = [Int32]::Parse($iSt.SubString(10, 2))
+	$iSecond = [Int32]::Parse($iSt.SubString(12, 2))
+	$iMilliseconds = 0
+	$iUtcOffsetMinutes = [Int32]::Parse($iSt.Substring(21, 4))
 	if ( $iUtcOffsetMinutes -ne 0 )  { $dtkind = [DateTimeKind]::Local } 
-    else { $dtkind = [DateTimeKind]::Utc } 
+    else { $dtkind = [DateTimeKind]::Utc }
 	$ReturnDate =  New-Object -TypeName DateTime -ArgumentList $iYear, $iMonth, $iDay, $iHour, $iMinute, $iSecond, $iMilliseconds, $dtkind
 	return (get-date $ReturnDate -UFormat "%s")
-} 
+}
 
 
 # Remove recorded access attempts, by IP, or expired records if no IP provided.
@@ -318,9 +383,18 @@ function clear_attempts ($IP = 0) {
 		} else { 
 			foreach ($a in $Entry.GetEnumerator()) { if ($a.Value[0] -eq $IP) {	$Removes += $a.Key } } 		
 		}
-	} 
+	}
 	foreach ($b in $Removes) { $Entry.Remove($b)} 
 }
+
+#Run as Administrator failsafe
+function check_administrator_permissions ($action) {
+	if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+		error "Script action '$action' needs administrator privileges! Exiting..."
+		exit
+	}
+}
+
 
 ################################################################################
 #Process input parameters
@@ -347,7 +421,9 @@ if ($args -match "-config") {
 } 
 
 # Release all current banned IPs
-if ($args -match "-jailbreak") { 
+if ($args -match "-jailbreak") {
+	$DebugPreference = "continue"
+	check_administrator_permissions "-jailbreak"
 	actioned "Jailbreak initiated by console. Removing ALL IPs currently banned"
 	$EnrichmentCentre = get_jail_list
 	if ($EnrichmentCentre){		
@@ -365,7 +441,8 @@ if ($args -match "-jailbreak") {
 }
 
 # Show the inmates in the jail.
-if ($args -match "-jail") { 
+if ($args -match "-jail") {
+	$DebugPreference = "continue"
 	$inmates = get_jail_list 
 	if ($inmates) { 	
 		"wail2ban currently banned listings: `n" 
@@ -376,18 +453,52 @@ if ($args -match "-jail") {
 		}		
 		"`nThis is a listing of the current Windows Firewall with Advanced Security rules, starting with `""+$FirewallRulePrefix+" *`""
 	} else { "There are no currrently banned IPs"}
-	
+
 	exit
 } 
 
+#Ban specific IP.
+if ($args -match "-ban") {
+	$DebugPreference = "continue"
+	check_administrator_permissions "-ban"
+	$IP = $args[ [array]::indexOf($args,"-ban")+1]
+	actioned "Ban IP invoked: going to ban $IP."
+	$ExpireDate = (Get-Date).AddSeconds($PERMABAN_DURATION)
+	jail_lockup $IP $ExpireDate
+	exit
+}
 
 #Unban specific IP. Remove associated schtask, if exists. 
-if ($args -match "-unban") {     
+if ($args -match "-unban") {
+	$DebugPreference = "continue"
+	check_administrator_permissions "-unban"   
     $IP = $args[ [array]::indexOf($args,"-unban")+1] 	
 	actioned "Unban IP invoked: going to unban $IP and remove from the log."
 	jail_release $IP
-	(gc $BannedIPLog) | ? {$_ -notmatch $IP } | sc $BannedIPLog # remove IP from ban log
+#	clear_attempts $IP
+	(Get-Content $BannedIPLog) | Where-Object {$_ -notmatch $IP } | Set-Content $BannedIPLog # remove IP from ban log
 	exit
+}
+
+#Switch for autoban mode to ban whole IP range
+if ($args -match "-cidrmask") {
+	$banCIDRmask = $args[ [array]::indexOf($args,"-cidrmask")+1]
+	if ($banCIDRmask -eq 24) {
+		$banMode = 2
+		actioned "IP ban mode: Ban CIDR mask: /$banCIDRmask"
+	}
+	elseif ($banCIDRmask -eq 16) {
+		$banMode = 1
+		actioned "IP ban mode: Ban CIDR mask: /$banCIDRmask"
+	}
+	elseif ($banCIDRmask -eq 0) {
+		$banMode = 0
+		actioned "IP ban mode: Ban single IP"
+	}
+	else {
+		error "Parameter value invalid. Enter values: '0, 16, 24'."
+		exit
+	}
 }
 
 #Display Help Message
@@ -395,8 +506,27 @@ if ($args -match "-help") {
 	help;	exit
 }
 
+#Hiden argument for unban_old_records background job
+if ($args -match "-unbor") {
+	check_administrator_permissions "unban_old_records"
+	actioned "unban_old_records backgroud job started successfully."
+	while ($true) {
+#		clear_attempts
+		unban_old_records
+		Start-Sleep -Seconds $LOOP_PERFORMANCE_OPTIMIZATION
+	}
+}
+
+#No argument -> run wail2ban with standart values
+if ($args.Length -eq 0) {
+	$banMode = 0
+	actioned "IP ban mode: Ban single IP"
+}
+
 ################################################################################
 #Setup for the loop
+
+check_administrator_permissions "wail2ban main service loop"
 
 $SinkName = "LoginAttempt"
 $Entry = @{}
@@ -409,22 +539,42 @@ $query = "SELECT * FROM __instanceCreationEvent WHERE TargetInstance ISA 'Win32_
 
 actioned "wail2ban invoked"
 actioned "Checking for a heap of events: "
-$CheckEvents | %{ actioned " - $($_.EventLog) log event code $($_.EventID)" }
+$CheckEvents | ForEach-Object { actioned " - $($_.EventLog) log event code $($_.EventID)" }
 actioned "The Whitelist: $whitelist"
 actioned "The Self-list: $Selflist"
 
 pickupBanDuration
 
+################################################################################
+#Start unban_old_records background job
+debug "Starting unban_old_records background job."
+Start-Job -Name "Wail2ban_unban_old_records" -FilePath $wail2banScript -ArgumentList '-unbor'
 
 ################################################################################
 #Loop!
 
 Register-WMIEvent -Query $query -sourceidentifier $SinkName
-do { #bedobedo
+while ($true) { #bedobedo
 	$new_event = wait-event -sourceidentifier $SinkName  
 	$TheEvent = $new_event.SourceeventArgs.NewEvent.TargetInstance
-	select-string $RegexIP -input $TheEvent.message -AllMatches | foreach { foreach ($a in $_.matches) {
-		$IP = $a.Value 		
+	select-string $RegexIP -input $TheEvent.message -AllMatches | ForEach-Object { foreach ($a in $_.matches) {
+		#set ip or cidr ip range to ban
+		if ($banMode -eq 0) { #normal
+			$IP = $a.Value
+		}
+		elseif ($banMode -eq 2) { #ban cidr mask 24
+			$Global:origIP = $a.value
+			$IP = ([IPAddress] (([IPAddress] $a.Value).Address -band ([IPAddress] "255.255.255.0").Address)).IPAddressToString + "/24"
+		}
+		elseif ($banMode -eq 1) {	#ban cidr mask 16
+			$Global:origIP = $a.value
+			$IP = ([IPAddress] (([IPAddress] $a.Value).Address -band ([IPAddress] "255.255.0.0").Address)).IPAddressToString + "/16"
+		}
+		else {
+			debug "Error: Unresolved state of banMode! Returning to normal mode."
+			$IP = $a.Value
+		}
+		
 		if ($SelfList -match $IP) { debug "Whitelist of self-listed IPs! Do nothing. ($IP)" }
 		else {	
 			$RecordID = $TheEvent.RecordNumber
@@ -436,15 +586,12 @@ do { #bedobedo
 			debug "$($TheEvent.LogFile) Log Event captured: ID $($RecordID), IP $IP, Event Code $($TheEvent.EventCode), Attempt #$($IPCount). "							
 			
 			if ($IPCount -ge $CHECK_COUNT) { 
-				jail_lockup $IP		
+				jail_lockup $IP
 				clear_attempts $IP
-			} 
+			}
 			clear_attempts
-			unban_old_records
 		}
 	}
 	}
-	
-	Remove-event  -sourceidentifier $SinkName  
-	
-} while ($true)
+	Remove-event  -sourceidentifier $SinkName
+}

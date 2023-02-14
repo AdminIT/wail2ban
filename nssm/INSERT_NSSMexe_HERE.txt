@@ -1,0 +1,1 @@
+Download nssm from https://nssm.cc/download and unzip nssm.exe into this folder. Then run wail2ban_install_service.ps1

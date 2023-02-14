@@ -1,29 +1,37 @@
 wail2ban
 ========
 
-[![No Maintenance Intended](http://unmaintained.tech/badge.svg)](http://unmaintained.tech/)
-
 ![Saddest Whale](http://i.imgur.com/NVlsY.png "Saddest Whale")
 
 wail2ban is a windows port of the basic functionality of [fail2ban](http://www.fail2ban.org/), and combining elements of [ts_block](https://github.com/EvanAnderson/ts_block). 
 
+This is modified version of Wail2ban by Miroslav Holman for use in AdminIT s.r.o company.
+Readme file is modified version from original github project (https://github.com/glasnt/wail2ban)
 
 overview
 --------
 
-wail2ban is a system that takes incoming failed access events for a customly configurable set of known event ids, and given sufficient failed attacks in a period of time, creates temporary firewall rules to block access. 
+wail2ban is a system that takes incoming failed access events for a custom configurable set of known event ids, and given sufficient failed attacks in a period of time, creates temporary firewall rules to block access. 
 
 
 installation 
 ------------
 
-Installing wail2ban is a case of a view simple tasks: 
+Installing wail2ban is a case of a fiew simple tasks: 
 
- * copy all the repository files to a location on the client machine, e.g. `C:\scripts\wail2ban`
- * Using Task Scheduler, import the `start wail2ban onstartup.xml` file to automatically create a scheduled task to start the script when the machine boots. 
- * Initiate the script by running the `start wail2ban.bat` file. This is what the scheduled task starts. 
+ * copy all the repository files to a secure location (write permissions only for necessary user accounts recommended) on the client machine, e.g. `C:\Program Files\wail2ban`
+ * Download latest version of nssm from their official website https://nssm.cc/download
+ * Unzip the 64bit or 32bit version and paste the nssm.exe into nssm folder
+ * Run  wail2ban_install_service.ps1 with parameter `-install` (or without any parameters). Note: The script needs to be run from install location of wail2ban! (location that you copied files in first step)
+ * After installation is complete start the service.
 
-commandline execution
+
+uninstallation 
+------------
+ * Run wail2ban_install_service.ps1 with parameter `-uninstall`
+
+
+command line execution
 ---------------------
 
 wail2ban has `write-debug` things through it, just uncomment the `$DebugPreference` line to enable. This will output nice things to CMD, if running ad-hoc.
@@ -33,6 +41,7 @@ There are also a number of options that can be run against the script to control
  * `-config` : dumps a parsed output of the configuration file to standard out, including timing and whitelist configurations. 
  * `-jail`   : shows the current set of banned IPs on the machine
  * `-jailbreak`: unbans every IP currently banned by the script. 
+ * `-help` : See complete list of commands
 
 technical overview 
 ------------------
@@ -83,6 +92,14 @@ As with all automated systems, there can be some false-positives.
 
 **Jailbreak** - a configuration called `-jailbreak` can be run against the script at any time to immediately remove all banned IPs. All their counters are reset, and it is as if the IP never tried to attack the machine.
 
+
+Features added by AdminIT
+--------
+* Ban parameter - bans the specified IP permanently
+* Option to ban whole IP ranges - Currently wail2ban can be switched into 2 modes of baning the CIDR masks. This is specified by parameter `-cidrmask 24` or `-cidrmask 16` of the wail2ban.ps1 script. If you installed wail2ban as service trough nssm, you'll have to use nssm.exe in gui mode in order to edit the lauch parameters
+
+For additional info refer to `-help` command. Also full list of changes can be found in comments section of wail2ban.ps1 main script.
+
 htmlgen
 ---------
 
@@ -94,11 +111,10 @@ If you want to enable this, grok the main wail2ban.ps1 script for the call to `w
 
 limitations
 -----------
-
-There can be improvements relating to the service-like execution of this script, so it's always running. This can be acheieved using something like [non-sucking service manager](http://nssm.cc/), but that is left as an exercise for the reader. 
+* Wail2ban works only on Windows or Windows server from Windows server 2016 and up. This is due to a eventvwr bug present in earlier Windows version, that does not write incoming IP adress, which made the false audit, into event log, if the adress is not resolvable by local network hostname.
+* Windows Firewall has to be turned ON on network profile you using! Wail2ban is just simply creating and removing Windows Firewall rules in order to block incoming requests.
 
 Update 2020: There have been several on and off repo communications saying this code is still useful! I don't have any way to test the following, but hopefully the following may help: 
  
  * Thanks to Marco Jonas, `BLOCK_TYPE` is set to `netsh`, which I presume still exists.
  * Thanks to Gl0, you can add SSL RDP Login support with [this patch](https://github.com/glasnt/wail2ban/pull/13/files)
- * Thanks to kentuckytech, add `-executionpolicy bypass -file` to the .bat file if you require a bypass.
